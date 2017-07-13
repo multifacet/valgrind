@@ -301,9 +301,9 @@ typedef
 
 /* --- Operations --- */
 
-typedef enum { OpLoad=0, OpStore=1, OpAlu=2, OpFlush=3 } Op;
+typedef enum { OpLoad=0, OpStore=1, OpAlu=2, OpFlush=3, OpFence=4 } Op;
 
-#define N_OPS 4
+#define N_OPS 5
 
 
 /* --- Types --- */
@@ -374,6 +374,30 @@ static const HChar* nameOfFlushTypeIndex ( Int i )
       default: tl_assert(0);
    }
 }
+
+#define N_FENCE_TYPES 4
+
+static Int fencetype2index ( IRMBusEvent ev)
+{
+   switch (ev) {
+      case Imbe_Fence:     return 0;
+      case Imbe_SFence:    return 2;
+      case Imbe_LFence:    return 3;
+      // there is another fence called Imbe_CancelReservation, only on ARM
+      default: tl_assert(0);
+   }
+}
+
+static const HChar* nameOfFenceTypeIndex ( Int i )
+{
+   switch (i) {
+      case 0: return "FENCE";   break;
+      case 1: return "ARM-specific"; break;
+      case 2: return "SFENCE";  break;
+      case 3: return "LFENCE";  break;
+      default: tl_assert(0);
+   }
+}
 /* --- Counts --- */
 
 static ULong detailCounts[N_OPS][N_TYPES];
@@ -425,6 +449,23 @@ static void instrument_flush_detail(IRSB* sb, Op op, IRFlushKind fk)
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
 }
 
+static void instrument_fence_detail(IRSB* sb, Op op, IRMBusEvent ev)
+{
+   IRDirty* di;
+   IRExpr** argv;
+   const UInt typeIx = fencetype2index(ev);
+
+   tl_assert(op == OpFence);
+   tl_assert(typeIx < N_FENCE_TYPES);
+
+   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&detailCounts[op][typeIx] ) );
+   di = unsafeIRDirty_0_N( 1, "increment_detail",
+                              VG_(fnptr_to_fnentry)( &increment_detail ), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
+}
+
 /* Summarize and print the details. */
 static void print_details ( void )
 {
@@ -453,7 +494,16 @@ static void print_flush_details ( void )
                 detailCounts[OpFlush][typeIx]
       );
    }
-
+   VG_(umsg)("\n");
+   VG_(umsg)("\n");
+   VG_(umsg)("   Type              Fences\n");
+   VG_(umsg)("   -------------------------------------------\n");
+   for (typeIx = 0; typeIx < N_FENCE_TYPES; typeIx++) {
+      VG_(umsg)("   %-10s %'12llu\n",
+                nameOfFenceTypeIndex( typeIx ),
+                detailCounts[OpFence][typeIx]
+      );
+   }
 }
 
 /*------------------------------------------------------------*/
@@ -777,9 +827,13 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
          case Ist_AbiHint:
          case Ist_Put:
          case Ist_PutI:
-         case Ist_MBE:
             addStmtToIRSB( sbOut, st );
             break;
+         case Ist_MBE:
+	    if (clo_flush_counts)
+	        instrument_fence_detail( sbOut, OpFence, st->Ist.MBE.event);
+            addStmtToIRSB( sbOut, st );
+	    break;
          case Ist_Flush:	
 	    if (clo_flush_counts)
 	        instrument_flush_detail( sbOut, OpFlush, st->Ist.Flush.fk);
