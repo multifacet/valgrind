@@ -186,6 +186,7 @@
  * the top of this file. */
 static Bool clo_basic_counts    = True;
 static Bool clo_detailed_counts = False;
+static Bool clo_flush_counts    = False;
 static Bool clo_trace_mem       = False;
 static Bool clo_trace_sbs       = False;
 
@@ -199,6 +200,7 @@ static Bool lk_process_cmd_line_option(const HChar* arg)
    if VG_STR_CLO(arg, "--fnname", clo_fnname) {}
    else if VG_BOOL_CLO(arg, "--basic-counts",      clo_basic_counts) {}
    else if VG_BOOL_CLO(arg, "--detailed-counts",   clo_detailed_counts) {}
+   else if VG_BOOL_CLO(arg, "--flush-counts",      clo_flush_counts) {}
    else if VG_BOOL_CLO(arg, "--trace-mem",         clo_trace_mem) {}
    else if VG_BOOL_CLO(arg, "--trace-superblocks", clo_trace_sbs) {}
    else
@@ -214,6 +216,7 @@ static void lk_print_usage(void)
    VG_(printf)(
 "    --basic-counts=no|yes     count instructions, jumps, etc. [yes]\n"
 "    --detailed-counts=no|yes  count loads, stores and alu ops [no]\n"
+"    --flush-counts=no|yes     count all kinds of flush ops [no]\n"
 "    --trace-mem=no|yes        trace all loads and stores [no]\n"
 "    --trace-superblocks=no|yes  trace all superblock entries [no]\n"
 "    --fnname=<name>           count calls to <name> (only used if\n"
@@ -298,9 +301,9 @@ typedef
 
 /* --- Operations --- */
 
-typedef enum { OpLoad=0, OpStore=1, OpAlu=2 } Op;
+typedef enum { OpLoad=0, OpStore=1, OpAlu=2, OpFlush=3 } Op;
 
-#define N_OPS 3
+#define N_OPS 4
 
 
 /* --- Types --- */
@@ -349,7 +352,28 @@ static const HChar* nameOfTypeIndex ( Int i )
    }
 }
 
+/* --- Flush Types --- */
+#define N_FLUSH_TYPES 3
 
+static Int flushtype2index ( IRFlushKind fk )
+{
+   switch (fk) {
+      case Ifk_flush:      return 0;
+      case Ifk_flushopt:   return 1;
+      case Ifk_clwb:       return 2;
+      default: tl_assert(0);
+   }
+}
+
+static const HChar* nameOfFlushTypeIndex ( Int i )
+{
+   switch (i) {
+      case 0: return "CLFLUSH";   break;
+      case 1: return "CLFLUSHOPT";   break;
+      case 2: return "CLWB";  break;
+      default: tl_assert(0);
+   }
+}
 /* --- Counts --- */
 
 static ULong detailCounts[N_OPS][N_TYPES];
@@ -381,6 +405,26 @@ static void instrument_detail(IRSB* sb, Op op, IRType type, IRAtom* guard)
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
 }
 
+/* A helper that adds the instrumentation for a detail.  guard ::
+   Ity_I1 is the guarding condition for the event.  If NULL it is
+   assumed to mean "always True". */
+static void instrument_flush_detail(IRSB* sb, Op op, IRFlushKind fk)
+{
+   IRDirty* di;
+   IRExpr** argv;
+   const UInt typeIx = flushtype2index(fk);
+
+   tl_assert(op == OpFlush);
+   tl_assert(typeIx < N_FLUSH_TYPES);
+
+   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&detailCounts[op][typeIx] ) );
+   di = unsafeIRDirty_0_N( 1, "increment_detail",
+                              VG_(fnptr_to_fnentry)( &increment_detail ), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
+}
+
 /* Summarize and print the details. */
 static void print_details ( void )
 {
@@ -397,6 +441,20 @@ static void print_details ( void )
    }
 }
 
+/* Summarize and print the details. */
+static void print_flush_details ( void )
+{
+   Int typeIx;
+   VG_(umsg)("   Type              Flushes\n");
+   VG_(umsg)("   -------------------------------------------\n");
+   for (typeIx = 0; typeIx < N_FLUSH_TYPES; typeIx++) {
+      VG_(umsg)("   %-10s %'12llu\n",
+                nameOfFlushTypeIndex( typeIx ),
+                detailCounts[OpFlush][typeIx]
+      );
+   }
+
+}
 
 /*------------------------------------------------------------*/
 /*--- Stuff for --trace-mem                                ---*/
@@ -642,7 +700,7 @@ static void lk_post_clo_init(void)
 {
    Int op, tyIx;
 
-   if (clo_detailed_counts) {
+   if (clo_detailed_counts || clo_flush_counts) {
       for (op = 0; op < N_OPS; op++)
          for (tyIx = 0; tyIx < N_TYPES; tyIx++)
             detailCounts[op][tyIx] = 0;
@@ -720,10 +778,13 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
          case Ist_Put:
          case Ist_PutI:
          case Ist_MBE:
-         case Ist_Flush:
             addStmtToIRSB( sbOut, st );
             break;
-
+         case Ist_Flush:	
+	    if (clo_flush_counts)
+	        instrument_flush_detail( sbOut, OpFlush, st->Ist.Flush.fk);
+            addStmtToIRSB( sbOut, st );
+            break;
          case Ist_IMark:
             if (clo_basic_counts) {
                /* Needed to be able to check for inverted condition in Ist_Exit */
@@ -1037,6 +1098,12 @@ static void lk_fini(Int exitcode)
       VG_(umsg)("\n");
       VG_(umsg)("IR-level counts by type:\n");
       print_details();
+   }
+
+   if (clo_flush_counts) {
+      VG_(umsg)("\n");
+      VG_(umsg)("IR-level counts by type:\n");
+      print_flush_details();
    }
 
    if (clo_basic_counts) {
