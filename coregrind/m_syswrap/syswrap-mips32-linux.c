@@ -352,7 +352,7 @@ static SysRes mips_PRE_sys_mmap(ThreadId tid,
       }
       /* and try again with the kernel */
       sres = VG_(am_do_mmap_NO_NOTIFY)(advised, arg2, arg3,
-                                       arg4 | VKI_MAP_FIXED,
+                                       arg4,
                                        arg5, arg6);
    }
 
