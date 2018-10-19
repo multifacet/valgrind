@@ -399,7 +399,7 @@ static const HChar* nameOfFenceTypeIndex ( Int i )
    }
 }
 /* --- Counts --- */
-#define FLUSH_LIMIT 64
+#define FLUSH_LIMIT 256
 static ULong detailCounts[N_OPS][N_TYPES];
 
 static ULong flushHistogram[FLUSH_LIMIT];
@@ -413,9 +413,9 @@ void increment_detail(ULong* detail)
    (*detail)++;
 }
 
-static VG_REGPARM(1)
+static VG_REGPARM(2)
 void record_flush_count(ULong* histogram, ULong* bucket) {
-    (*(histogram+bucket))++;
+    (*(histogram+*bucket))++;
 }
 
 static VG_REGPARM(1)
@@ -491,8 +491,9 @@ static void instrument_fence_detail(IRSB* sb, Op op, IRMBusEvent ev)
 //   if (guard) di->guard = guard;
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
 
-   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&flushHistogram[currentFlushCount] ) );
-   di = unsafeIRDirty_0_N( 1, "record_flush_count",
+   argv = mkIRExprVec_2( mkIRExpr_HWord( (HWord)&flushHistogram ),
+                          mkIRExpr_HWord( (HWord)&currentFlushCount ));
+   di = unsafeIRDirty_0_N( 2, "record_flush_count",
                               VG_(fnptr_to_fnentry)( &record_flush_count ), 
                               argv);
 //   if (guard) di->guard = guard;
@@ -547,16 +548,22 @@ static void print_flush_details ( void )
    }
     
    Int bucket;
+   ULong weighted_count = 0;
+   ULong count = 0;
    VG_(umsg)("\n");
    VG_(umsg)("\n");
-   VG_(umsg)("   Flush Histogram\n");
+   VG_(umsg)("   Flush Histogram [Starts at 1, 64 in a row] \n");
    VG_(umsg)("   -------------------------------------------\n");
-   for (bucket = 0; bucket < FLUSH_LIMIT; bucket++) {
-      VG_(umsg)("   %-llu",
+   for (bucket = 1; bucket < FLUSH_LIMIT; bucket++) {
+      VG_(umsg)(" %-llu",
                 flushHistogram[bucket]
       );
+      weighted_count += bucket*flushHistogram[bucket];
+      count += flushHistogram[bucket];
+      if (bucket % 64 == 0) VG_(umsg)("\n");
    }
    VG_(umsg)("\n");
+   VG_(umsg)("Average number of overlapped flushes: %f\n", (Double) weighted_count / count );
 }
 
 /*------------------------------------------------------------*/
