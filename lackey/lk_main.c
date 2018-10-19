@@ -399,14 +399,33 @@ static const HChar* nameOfFenceTypeIndex ( Int i )
    }
 }
 /* --- Counts --- */
-
+#define FLUSH_LIMIT 64
 static ULong detailCounts[N_OPS][N_TYPES];
+
+static ULong flushHistogram[FLUSH_LIMIT];
+
+static ULong currentFlushCount;
 
 /* The helper that is called from the instrumented code. */
 static VG_REGPARM(1)
 void increment_detail(ULong* detail)
 {
    (*detail)++;
+}
+
+static VG_REGPARM(1)
+void record_flush_count(ULong* histogram, ULong* bucket) {
+    (*(histogram+bucket))++;
+}
+
+static VG_REGPARM(1)
+void increment_flush(ULong* flush_count) {
+    (*flush_count)++;
+}
+
+static VG_REGPARM(1)
+void reset_flush(ULong* flush_count) {
+    *flush_count = 0;
 }
 
 /* A helper that adds the instrumentation for a detail.  guard ::
@@ -447,6 +466,13 @@ static void instrument_flush_detail(IRSB* sb, Op op, IRFlushKind fk)
                               argv);
 //   if (guard) di->guard = guard;
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
+
+   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&currentFlushCount ) );
+   di = unsafeIRDirty_0_N( 1, "increment_flush",
+                              VG_(fnptr_to_fnentry)( &increment_flush ), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
 }
 
 static void instrument_fence_detail(IRSB* sb, Op op, IRMBusEvent ev)
@@ -464,6 +490,21 @@ static void instrument_fence_detail(IRSB* sb, Op op, IRMBusEvent ev)
                               argv);
 //   if (guard) di->guard = guard;
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
+
+   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&flushHistogram[currentFlushCount] ) );
+   di = unsafeIRDirty_0_N( 1, "record_flush_count",
+                              VG_(fnptr_to_fnentry)( &record_flush_count ), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
+   argv = mkIRExprVec_1( mkIRExpr_HWord( (HWord)&currentFlushCount ) );
+   di = unsafeIRDirty_0_N( 1, "reset_flush",
+                              VG_(fnptr_to_fnentry)( &reset_flush), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
+
+
 }
 
 /* Summarize and print the details. */
@@ -504,6 +545,18 @@ static void print_flush_details ( void )
                 detailCounts[OpFence][typeIx]
       );
    }
+    
+   Int bucket;
+   VG_(umsg)("\n");
+   VG_(umsg)("\n");
+   VG_(umsg)("   Flush Histogram\n");
+   VG_(umsg)("   -------------------------------------------\n");
+   for (bucket = 0; bucket < FLUSH_LIMIT; bucket++) {
+      VG_(umsg)("   %-llu",
+                flushHistogram[bucket]
+      );
+   }
+   VG_(umsg)("\n");
 }
 
 /*------------------------------------------------------------*/
@@ -748,12 +801,17 @@ static void trace_superblock(Addr addr)
 
 static void lk_post_clo_init(void)
 {
-   Int op, tyIx;
+   Int op, tyIx, bucket;
 
    if (clo_detailed_counts || clo_flush_counts) {
       for (op = 0; op < N_OPS; op++)
          for (tyIx = 0; tyIx < N_TYPES; tyIx++)
             detailCounts[op][tyIx] = 0;
+
+      for (bucket = 0; bucket < FLUSH_LIMIT; bucket++) {
+          flushHistogram[bucket] = 0;
+      }
+      currentFlushCount = 0; 
    }
 }
 
