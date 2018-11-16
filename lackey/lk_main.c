@@ -188,6 +188,7 @@ static Bool clo_basic_counts    = True;
 static Bool clo_detailed_counts = False;
 static Bool clo_flush_counts    = False;
 static Bool clo_trace_mem       = False;
+static Bool clo_trace_flush     = False;
 static Bool clo_trace_sbs       = False;
 
 /* The name of the function of which the number of calls (under
@@ -202,6 +203,7 @@ static Bool lk_process_cmd_line_option(const HChar* arg)
    else if VG_BOOL_CLO(arg, "--detailed-counts",   clo_detailed_counts) {}
    else if VG_BOOL_CLO(arg, "--flush-counts",      clo_flush_counts) {}
    else if VG_BOOL_CLO(arg, "--trace-mem",         clo_trace_mem) {}
+   else if VG_BOOL_CLO(arg, "--trace-flush",       clo_trace_flush) {}
    else if VG_BOOL_CLO(arg, "--trace-superblocks", clo_trace_sbs) {}
    else
       return False;
@@ -573,7 +575,7 @@ static void print_flush_details ( void )
 #define MAX_DSIZE    512
 
 typedef 
-   enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm }
+   enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm, Event_Df }
    EventKind;
 
 typedef
@@ -624,24 +626,28 @@ static Int   events_used = 0;
 
 static VG_REGPARM(2) void trace_instr(Addr addr, SizeT size)
 {
-   VG_(printf)("I  %08lx,%lu\n", addr, size);
+   VG_(printf)("I  %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_load(Addr addr, SizeT size)
 {
-   VG_(printf)(" L %08lx,%lu\n", addr, size);
+   VG_(printf)(" L %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_store(Addr addr, SizeT size)
 {
-   VG_(printf)(" S %08lx,%lu\n", addr, size);
+   VG_(printf)(" S %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_modify(Addr addr, SizeT size)
 {
-   VG_(printf)(" M %08lx,%lu\n", addr, size);
+   VG_(printf)(" M %012lx,%lu\n", addr, size);
 }
 
+static VG_REGPARM(2) void trace_flush(Addr addr, SizeT size)
+{
+   VG_(printf)(" FLUSH %012lx\n", addr);
+}
 
 static void flushEvents(IRSB* sb)
 {
@@ -669,6 +675,9 @@ static void flushEvents(IRSB* sb)
 
          case Event_Dm: helperName = "trace_modify";
                         helperAddr =  trace_modify; break;
+         
+         case Event_Df: helperName = "trace_flush";
+                        helperAddr =  trace_flush; break;
          default:
             tl_assert(0);
       }
@@ -791,6 +800,25 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
    events_used++;
 }
 
+/* Add an ordinary flush event. */
+static
+void addEvent_Df ( IRSB* sb, IRAtom* daddr, Int dsize )
+{
+   Event* lastEvt;
+   Event* evt;
+   tl_assert(clo_trace_flush);
+   tl_assert(isIRAtom(daddr));
+   
+   if (events_used == N_EVENTS)
+      flushEvents(sb);
+   tl_assert(events_used >= 0 && events_used < N_EVENTS);
+   evt = &events[events_used];
+   evt->ekind = Event_Df;
+   evt->size  = dsize;
+   evt->addr  = daddr;
+   evt->guard = NULL;
+   events_used++;
+}
 
 /*------------------------------------------------------------*/
 /*--- Stuff for --trace-superblocks                        ---*/
@@ -871,7 +899,7 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
       addStmtToIRSB( sbOut, IRStmt_Dirty(di) );
    }
 
-   if (clo_trace_mem) {
+   if (clo_trace_mem || clo_trace_flush) {
       events_used = 0;
    }
 
@@ -900,8 +928,13 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
             addStmtToIRSB( sbOut, st );
 	    break;
          case Ist_Flush:	
-	    if (clo_flush_counts)
-	        instrument_flush_detail( sbOut, OpFlush, st->Ist.Flush.fk);
+	        if (clo_trace_flush) {
+                //VG_(umsg)("%s:%08lx\n", nameOfFlushTypeIndex(st->Ist.Flush.fk),
+                //        st->Ist.Flush.addr->Iex.RdTmp.tmp);
+                addEvent_Df( sbOut, st->Ist.Flush.addr, 0);
+	        }
+            if (clo_flush_counts)
+                instrument_flush_detail( sbOut, OpFlush, st->Ist.Flush.fk);
             addStmtToIRSB( sbOut, st );
             break;
          case Ist_IMark:
@@ -1131,7 +1164,7 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
 
                addStmtToIRSB( sbOut, IRStmt_Dirty(di) );
             }
-            if (clo_trace_mem) {
+            if (clo_trace_mem||clo_trace_flush) {
                flushEvents(sbOut);
             }
 
@@ -1168,7 +1201,7 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
       addStmtToIRSB( sbOut, IRStmt_Dirty(di) );
    }
 
-   if (clo_trace_mem) {
+   if (clo_trace_mem||clo_trace_flush) {
       /* At the end of the sbIn.  Flush outstandings. */
       flushEvents(sbOut);
    }
