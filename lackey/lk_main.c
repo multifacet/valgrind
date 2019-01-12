@@ -177,10 +177,13 @@
 #include "pub_tool_libcbase.h"
 #include "pub_tool_options.h"
 #include "pub_tool_machine.h"     // VG_(fnptr_to_fnentry)
+#include "lackey.h"     //
 
 /*------------------------------------------------------------*/
 /*--- Command line options                                 ---*/
 /*------------------------------------------------------------*/
+
+static Bool lk_instrument_state = True; /* Instrumentation on ? */
 
 /* Command line options controlling instrumentation kinds, as described at
  * the top of this file. */
@@ -575,7 +578,7 @@ static void print_flush_details ( void )
 #define MAX_DSIZE    512
 
 typedef 
-   enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm, Event_Df }
+   enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm, Event_Dfl, Event_Dfe }
    EventKind;
 
 typedef
@@ -649,6 +652,11 @@ static VG_REGPARM(2) void trace_flush(Addr addr, SizeT size)
    VG_(printf)(" FLUSH %012lx\n", addr);
 }
 
+static void trace_fence(void)
+{
+   VG_(printf)(" FENCE \n");
+}
+
 static void flushEvents(IRSB* sb)
 {
    Int        i;
@@ -676,17 +684,27 @@ static void flushEvents(IRSB* sb)
          case Event_Dm: helperName = "trace_modify";
                         helperAddr =  trace_modify; break;
          
-         case Event_Df: helperName = "trace_flush";
-                        helperAddr =  trace_flush; break;
+         case Event_Dfl: helperName = "trace_flush";
+                         helperAddr =  trace_flush; break;
+         
+         case Event_Dfe: helperName = "trace_fence";
+                         helperAddr =  trace_fence; break;
+
          default:
             tl_assert(0);
       }
 
       // Add the helper.
-      argv = mkIRExprVec_2( ev->addr, mkIRExpr_HWord( ev->size ) );
-      di   = unsafeIRDirty_0_N( /*regparms*/2, 
-                                helperName, VG_(fnptr_to_fnentry)( helperAddr ),
-                                argv );
+      if (helperAddr == trace_fence) {
+          di = unsafeIRDirty_0_N( 0, helperName, 
+                  VG_(fnptr_to_fnentry)( helperAddr ),
+                  mkIRExprVec_0() );
+      } else {
+          argv = mkIRExprVec_2( ev->addr, mkIRExpr_HWord( ev->size ) );
+          di   = unsafeIRDirty_0_N( /*regparms*/2, 
+                  helperName, VG_(fnptr_to_fnentry)( helperAddr ),
+                  argv );
+      }
       if (ev->guard) {
          di->guard = ev->guard;
       }
@@ -802,9 +820,8 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
 
 /* Add an ordinary flush event. */
 static
-void addEvent_Df ( IRSB* sb, IRAtom* daddr, Int dsize )
+void addEvent_Dfl ( IRSB* sb, IRAtom* daddr, Int dsize )
 {
-   Event* lastEvt;
    Event* evt;
    tl_assert(clo_trace_flush);
    tl_assert(isIRAtom(daddr));
@@ -813,13 +830,30 @@ void addEvent_Df ( IRSB* sb, IRAtom* daddr, Int dsize )
       flushEvents(sb);
    tl_assert(events_used >= 0 && events_used < N_EVENTS);
    evt = &events[events_used];
-   evt->ekind = Event_Df;
+   evt->ekind = Event_Dfl;
    evt->size  = dsize;
    evt->addr  = daddr;
    evt->guard = NULL;
    events_used++;
 }
 
+/* Add an ordinary fence event. */
+static
+void addEvent_Dfe ( IRSB* sb )
+{
+   Event* evt;
+   tl_assert(clo_trace_flush);
+   
+   if (events_used == N_EVENTS)
+      flushEvents(sb);
+   tl_assert(events_used >= 0 && events_used < N_EVENTS);
+   evt = &events[events_used];
+   evt->ekind = Event_Dfe;
+   evt->size  = 0;
+   evt->addr  = 0;
+   evt->guard = NULL;
+   events_used++;
+}
 /*------------------------------------------------------------*/
 /*--- Stuff for --trace-superblocks                        ---*/
 /*------------------------------------------------------------*/
@@ -869,6 +903,11 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
    if (gWordTy != hWordTy) {
       /* We don't currently support this case. */
       VG_(tool_panic)("host/guest word size mismatch");
+   }
+
+   // No instrumentation if it is switched off
+   if (! lk_instrument_state) {
+       return sbIn;
    }
 
    /* Set up SB */
@@ -923,15 +962,16 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
             addStmtToIRSB( sbOut, st );
             break;
          case Ist_MBE:
-	    if (clo_flush_counts)
-	        instrument_fence_detail( sbOut, OpFence, st->Ist.MBE.event);
+            if (clo_trace_flush) {
+                addEvent_Dfe(sbOut);
+            }
+            if (clo_flush_counts)
+                instrument_fence_detail( sbOut, OpFence, st->Ist.MBE.event);
             addStmtToIRSB( sbOut, st );
-	    break;
+            break;
          case Ist_Flush:	
 	        if (clo_trace_flush) {
-                //VG_(umsg)("%s:%08lx\n", nameOfFlushTypeIndex(st->Ist.Flush.fk),
-                //        st->Ist.Flush.addr->Iex.RdTmp.tmp);
-                addEvent_Df( sbOut, st->Ist.Flush.addr, 0);
+                addEvent_Dfl( sbOut, st->Ist.Flush.addr, 0);
 	        }
             if (clo_flush_counts)
                 instrument_flush_detail( sbOut, OpFlush, st->Ist.Flush.fk);
@@ -1264,6 +1304,52 @@ static void lk_fini(Int exitcode)
    }
 }
 
+static
+void lk_set_instrument_state(const HChar* reason, Bool state)
+{
+  if (lk_instrument_state == state) {
+      VG_(printf)("%s: instrumentation already %s.. \n",
+              reason, state ? "ON" : "OFF");
+      return;
+  }
+  lk_instrument_state = state;
+  VG_(printf)("%s: instrumentation switching %s.. \n",
+          reason, state ? "ON" : "OFF");
+  
+  if (lk_instrument_state) {   
+    // Reset stats before switching on  
+    lk_post_clo_init();
+  }
+}
+
+static
+Bool lk_handle_client_request (ThreadId tid, UWord *args, UWord *ret)
+{
+   if (!VG_IS_TOOL_USERREQ('L','K',args[0])
+       && VG_USERREQ__GDB_MONITOR_COMMAND   != args[0])
+      return False;
+
+   switch(args[0]) {
+   case VG_USERREQ__START_INSTRUMENTATION:
+     lk_set_instrument_state("Client Request", True);
+     *ret = 0;                 /* meaningless */
+     break;
+
+   case VG_USERREQ__STOP_INSTRUMENTATION:
+     lk_set_instrument_state("Client Request", False);
+     *ret = 0;                 /* meaningless */
+     break;
+
+   default:
+      return False;
+   }
+
+   return True;
+}
+
+
+
+
 static void lk_pre_clo_init(void)
 {
    VG_(details_name)            ("Lackey");
@@ -1280,6 +1366,7 @@ static void lk_pre_clo_init(void)
    VG_(needs_command_line_options)(lk_process_cmd_line_option,
                                    lk_print_usage,
                                    lk_print_debug_usage);
+   VG_(needs_client_requests)(lk_handle_client_request);
 }
 
 VG_DETERMINE_INTERFACE_VERSION(lk_pre_clo_init)
