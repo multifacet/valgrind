@@ -184,6 +184,7 @@
 /*------------------------------------------------------------*/
 
 static Bool lk_instrument_state = True; /* Instrumentation on ? */
+static Bool lk_trace_state = False; /* Trace Prints off ? */
 
 /* Command line options controlling instrumentation kinds, as described at
  * the top of this file. */
@@ -555,6 +556,7 @@ static void print_flush_details ( void )
    Int bucket;
    ULong weighted_count = 0;
    ULong count = 0;
+   ULong median = 0;
    VG_(umsg)("\n");
    VG_(umsg)("\n");
    VG_(umsg)("   Flush Histogram [Starts at 1, 64 in a row] \n");
@@ -567,8 +569,19 @@ static void print_flush_details ( void )
       count += flushHistogram[bucket];
       if (bucket % 64 == 0) VG_(umsg)("\n");
    }
+   ULong curr_count = 0;
+   for (bucket = 1; bucket < FLUSH_LIMIT; bucket++) {
+      curr_count += flushHistogram[bucket];
+      if (curr_count > (count/2)) {
+          median = bucket;
+          break;
+      }
+   }
    VG_(umsg)("\n");
+   VG_(umsg)("Tracked flushes: %f\n", (Double) weighted_count);
+   VG_(umsg)("Tracked fences: %f\n", (Double) count + flushHistogram[0]);
    VG_(umsg)("Average number of overlapped flushes: %f\n", (Double) weighted_count / count );
+   VG_(umsg)("Median number of overlapped flushes: %llu\n", median );
 }
 
 /*------------------------------------------------------------*/
@@ -629,31 +642,42 @@ static Int   events_used = 0;
 
 static VG_REGPARM(2) void trace_instr(Addr addr, SizeT size)
 {
-   VG_(printf)("I  %012lx,%lu\n", addr, size);
+   //VG_(printf)("I  %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_load(Addr addr, SizeT size)
 {
-   VG_(printf)(" L %012lx,%lu\n", addr, size);
+   //VG_(printf)(" L %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_store(Addr addr, SizeT size)
 {
-   VG_(printf)(" S %012lx,%lu\n", addr, size);
+
+   if (! lk_trace_state)
+       return;
+   // Skip all non-PM addresses
+   if (addr >= 0x10000000000ul && addr < 0x30000000000ul)
+        VG_(printf)(" STORE %012lx %lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_modify(Addr addr, SizeT size)
 {
-   VG_(printf)(" M %012lx,%lu\n", addr, size);
+   if (! lk_trace_state)
+       return;
+   //VG_(printf)(" M %012lx,%lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_flush(Addr addr, SizeT size)
 {
+   if (! lk_trace_state)
+       return;
    VG_(printf)(" FLUSH %012lx\n", addr);
 }
 
 static void trace_fence(void)
 {
+   if (! lk_trace_state)
+       return;
    VG_(printf)(" FENCE \n");
 }
 
@@ -805,6 +829,7 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
       lastEvt->ekind = Event_Dm;
       return;
    }
+
 
    // No.  Add as normal.
    if (events_used == N_EVENTS)
@@ -1323,6 +1348,24 @@ void lk_set_instrument_state(const HChar* reason, Bool state)
 }
 
 static
+void lk_set_trace_state(const HChar* reason, Bool state)
+{
+  if (lk_trace_state == state) {
+      VG_(printf)("%s: tracing already %s.. \n",
+              reason, state ? "ON" : "OFF");
+      return;
+  }
+  lk_trace_state = state;
+  VG_(printf)("%s: tracing %s.. \n",
+          reason, state ? "ON" : "OFF");
+  
+  if (lk_trace_state) {   
+    // Reset stats before switching on  
+    lk_post_clo_init();
+  }
+}
+
+static
 Bool lk_handle_client_request (ThreadId tid, UWord *args, UWord *ret)
 {
    if (!VG_IS_TOOL_USERREQ('L','K',args[0])
@@ -1332,11 +1375,13 @@ Bool lk_handle_client_request (ThreadId tid, UWord *args, UWord *ret)
    switch(args[0]) {
    case VG_USERREQ__START_INSTRUMENTATION:
      lk_set_instrument_state("Client Request", True);
+     lk_set_trace_state("Client Request", True);
      *ret = 0;                 /* meaningless */
      break;
 
    case VG_USERREQ__STOP_INSTRUMENTATION:
      lk_set_instrument_state("Client Request", False);
+     lk_set_trace_state("Client Request", False);
      *ret = 0;                 /* meaningless */
      break;
 
