@@ -657,7 +657,7 @@ static VG_REGPARM(2) void trace_store(Addr addr, SizeT size)
        return;
    // Skip all non-PM addresses
    if (addr >= 0x10000000000ul && addr < 0x30000000000ul)
-        VG_(printf)(" STORE %012lx %lu\n", addr, size);
+        VG_(printf)(" STORE %#lx %lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_modify(Addr addr, SizeT size)
