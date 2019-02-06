@@ -657,7 +657,7 @@ static VG_REGPARM(2) void trace_store(Addr addr, SizeT size)
        return;
    // Skip all non-PM addresses
    if (addr >= 0x10000000000ul && addr < 0x30000000000ul)
-        VG_(printf)(" STORE %#lx %lu\n", addr, size);
+        VG_(printf)("STORE %#lx %lu\n", addr, size);
 }
 
 static VG_REGPARM(2) void trace_modify(Addr addr, SizeT size)
@@ -671,14 +671,14 @@ static VG_REGPARM(2) void trace_flush(Addr addr, SizeT size)
 {
    if (! lk_trace_state)
        return;
-   VG_(printf)(" FLUSH %012lx\n", addr);
+   VG_(printf)("FLUSH %#lx\n", addr);
 }
 
 static void trace_fence(void)
 {
    if (! lk_trace_state)
        return;
-   VG_(printf)(" FENCE \n");
+   VG_(printf)("FENCE\n");
 }
 
 static void flushEvents(IRSB* sb)
