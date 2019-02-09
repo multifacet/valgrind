@@ -656,8 +656,11 @@ static VG_REGPARM(2) void trace_store(Addr addr, SizeT size)
    if (! lk_trace_state)
        return;
    // Skip all non-PM addresses
-   if (addr >= 0x10000000000ul && addr < 0x30000000000ul)
-        VG_(printf)("STORE %#lx %lu\n", addr, size);
+   if (addr >= 0x10000000000ul && addr < 0x30000000000ul) {
+       VG_(printf)("STORE %#lx %lu\n", addr, size);
+          VG_(pp_ExeContext)(
+                  VG_(record_ExeContext)(VG_(get_running_tid)(), 0));
+   }
 }
 
 static VG_REGPARM(2) void trace_modify(Addr addr, SizeT size)
@@ -819,6 +822,7 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
    tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
 
    // Is it possible to merge this write with the preceding read?
+   /* We don't print reads so we comment this out.
    lastEvt = &events[events_used-1];
    if (events_used > 0
        && lastEvt->ekind == Event_Dr
@@ -829,7 +833,7 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
       lastEvt->ekind = Event_Dm;
       return;
    }
-
+    */
 
    // No.  Add as normal.
    if (events_used == N_EVENTS)
@@ -1086,7 +1090,7 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
             tl_assert(type != Ity_INVALID);
             if (clo_trace_mem) {
                addEvent_Dw( sbOut, st->Ist.Store.addr,
-                            sizeofIRType(type) );
+                                sizeofIRType(type) );
             }
             if (clo_detailed_counts) {
                instrument_detail( sbOut, OpStore, type, NULL/*guard*/ );
@@ -1199,7 +1203,7 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_trace_mem)
                   addEvent_Dw( sbOut, st->Ist.LLSC.addr,
-                                      sizeofIRType(dataTy) );
+                                    sizeofIRType(dataTy) );
                if (clo_detailed_counts)
                   instrument_detail( sbOut, OpStore, dataTy, NULL/*guard*/ );
             }
