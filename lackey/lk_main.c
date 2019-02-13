@@ -175,6 +175,7 @@
 #include "pub_tool_libcprint.h"
 #include "pub_tool_debuginfo.h"
 #include "pub_tool_libcbase.h"
+#include "pub_tool_threadstate.h"
 #include "pub_tool_options.h"
 #include "pub_tool_machine.h"     // VG_(fnptr_to_fnentry)
 #include "lackey.h"     //
@@ -421,7 +422,8 @@ void increment_detail(ULong* detail)
 
 static VG_REGPARM(2)
 void record_flush_count(ULong* histogram, ULong* bucket) {
-    (*(histogram+*bucket))++;
+    if (*bucket < FLUSH_LIMIT)
+        (*(histogram+*bucket))++;
 }
 
 static VG_REGPARM(1)
@@ -815,7 +817,6 @@ void addEvent_Dw_guarded ( IRSB* sb, IRAtom* daddr, Int dsize, IRAtom* guard )
 static
 void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
 {
-   Event* lastEvt;
    Event* evt;
    tl_assert(clo_trace_mem);
    tl_assert(isIRAtom(daddr));
