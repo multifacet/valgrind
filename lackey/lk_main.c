@@ -243,6 +243,7 @@ static void lk_print_debug_usage(void)
 /*------------------------------------------------------------*/
 
 /* Nb: use ULongs because the numbers can get very big */
+static ULong n_pm_stores = 0;
 static ULong n_func_calls    = 0;
 static ULong n_SBs_entered   = 0;
 static ULong n_SBs_completed = 0;
@@ -421,6 +422,14 @@ void increment_detail(ULong* detail)
 }
 
 static VG_REGPARM(2)
+void increment_pm_stores(ULong* store_count, Addr addr) {
+    // Skip all non-PM addresses
+    if (addr >= 0x10000000000ul && addr < 0x30000000000ul) {
+        (*store_count)++;
+    }
+}
+
+static VG_REGPARM(2)
 void record_flush_count(ULong* histogram, ULong* bucket) {
     if (*bucket < FLUSH_LIMIT)
         (*(histogram+*bucket))++;
@@ -455,6 +464,22 @@ static void instrument_detail(IRSB* sb, Op op, IRType type, IRAtom* guard)
    if (guard) di->guard = guard;
    addStmtToIRSB( sb, IRStmt_Dirty(di) );
 }
+
+static void instrument_store_detail(IRSB* sb, IRAtom* addr)
+{
+   IRDirty* di;
+   IRExpr** argv;
+
+   argv = mkIRExprVec_2(mkIRExpr_HWord((HWord)&n_pm_stores),
+                         addr);
+   di = unsafeIRDirty_0_N( 2, "increment_pm_stores",
+                              VG_(fnptr_to_fnentry)( &increment_pm_stores), 
+                              argv);
+//   if (guard) di->guard = guard;
+   addStmtToIRSB( sb, IRStmt_Dirty(di) );
+}
+
+
 
 /* A helper that adds the instrumentation for a detail.  guard ::
    Ity_I1 is the guarding condition for the event.  If NULL it is
@@ -580,6 +605,7 @@ static void print_flush_details ( void )
       }
    }
    VG_(umsg)("\n");
+   VG_(umsg)("PM stores: %f\n", (Double) n_pm_stores);
    VG_(umsg)("Tracked flushes: %f\n", (Double) weighted_count);
    VG_(umsg)("Tracked fences: %f\n", (Double) count + flushHistogram[0]);
    VG_(umsg)("Average number of overlapped flushes: %f\n", (Double) weighted_count / count );
@@ -835,6 +861,7 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
       return;
    }
     */
+//   if (guard) di->guard = guard;
 
    // No.  Add as normal.
    if (events_used == N_EVENTS)
@@ -912,6 +939,7 @@ static void lk_post_clo_init(void)
       }
       currentFlushCount = 0; 
    }
+   n_pm_stores = 0;
 }
 
 static
@@ -1093,6 +1121,8 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
                addEvent_Dw( sbOut, st->Ist.Store.addr,
                                 sizeofIRType(type) );
             }
+            if (clo_flush_counts)
+                instrument_store_detail( sbOut, st->Ist.Store.addr);
             if (clo_detailed_counts) {
                instrument_detail( sbOut, OpStore, type, NULL/*guard*/ );
             }
@@ -1174,6 +1204,8 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
                addEvent_Dr( sbOut, cas->addr, dataSize );
                addEvent_Dw( sbOut, cas->addr, dataSize );
             }
+            if (clo_flush_counts)
+                instrument_store_detail( sbOut, cas->addr);
             if (clo_detailed_counts) {
                instrument_detail( sbOut, OpLoad, dataTy, NULL/*guard*/ );
                if (cas->dataHi != NULL) /* dcas */
@@ -1205,6 +1237,8 @@ IRSB* lk_instrument ( VgCallbackClosure* closure,
                if (clo_trace_mem)
                   addEvent_Dw( sbOut, st->Ist.LLSC.addr,
                                     sizeofIRType(dataTy) );
+               if (clo_flush_counts)
+                   instrument_store_detail( sbOut, st->Ist.LLSC.addr);
                if (clo_detailed_counts)
                   instrument_detail( sbOut, OpStore, dataTy, NULL/*guard*/ );
             }
